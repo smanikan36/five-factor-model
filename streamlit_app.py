@@ -1,151 +1,65 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
-import math
-from pathlib import Path
+import numpy as np
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+st.set_page_config(page_title="Five-Factor Model Analyzer", layout="wide")
+st.title("Fama-French Five-Factor Model Analyzer")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Sidebar inputs
+ticker = st.sidebar.text_input("Enter stock ticker", "AAPL")
+start_date = st.sidebar.date_input("Start date", pd.to_datetime("2020-01-01"))
+end_date = st.sidebar.date_input("End date", pd.to_datetime("2025-01-01"))
 
+# Load stock data
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def get_stock_data(ticker, start, end):
+    stock = yf.download(ticker, start=start, end=end)['Adj Close']
+    returns = stock.pct_change().dropna()
+    return returns
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+returns = get_stock_data(ticker, start_date, end_date)
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+st.subheader(f"{ticker} Daily Returns")
+st.line_chart(returns)
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
+# Load Fama-French 5 Factor data
+@st.cache_data
+def get_ff5_data():
+    ff5 = pd.read_csv(
+        "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip",
+        skiprows=3, skipfooter=3, engine='python'
     )
+    ff5.index = pd.to_datetime(ff5['Date'], format='%Y%m%d')
+    ff5 = ff5[['Mkt-RF','SMB','HML','RMW','CMA','RF']].astype(float)/100
+    return ff5
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+ff5 = get_ff5_data()
+ff5 = ff5.loc[start_date:end_date]
 
-    return gdp_df
+# Merge stock returns with factor data
+data = pd.merge(returns, ff5, left_index=True, right_index=True)
+data['Excess'] = data[ticker] - data['RF']
 
-gdp_df = get_gdp_data()
+# Regression
+X = data[['Mkt-RF','SMB','HML','RMW','CMA']]
+X = sm.add_constant(X)
+y = data['Excess']
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+model = sm.OLS(y, X).fit()
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+st.subheader("Five-Factor Regression Results")
+st.text(model.summary())
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+# Plot factor sensitivities
+st.subheader("Factor Loadings (Betas)")
+fig, ax = plt.subplots()
+sns.barplot(x=X.columns[1:], y=model.params[1:])
+ax.set_ylabel("Beta")
+st.pyplot(fig)
 
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+# Optional: Show alpha
+st.subheader(f"Alpha: {model.params['const']:.4f} per day")
