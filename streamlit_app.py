@@ -1,65 +1,71 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import numpy as np
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-st.set_page_config(page_title="Five-Factor Model Analyzer", layout="wide")
-st.title("Fama-French Five-Factor Model Analyzer")
+st.set_page_config(page_title="Five-Factor Model (Manual Input)", layout="wide")
+st.title("Fama-French Five-Factor Model Analyzer (Manual Input)")
 
-# Sidebar inputs
-ticker = st.sidebar.text_input("Enter stock ticker", "AAPL")
-start_date = st.sidebar.date_input("Start date", pd.to_datetime("2020-01-01"))
-end_date = st.sidebar.date_input("End date", pd.to_datetime("2025-01-01"))
+st.write("""
+Enter your **stock returns** and the **five factor returns** (including risk-free rate) manually. 
+The app will calculate excess returns, run the five-factor regression, and display factor loadings and alpha.
+""")
 
-# Load stock data
-@st.cache_data
-def get_stock_data(ticker, start, end):
-    stock = yf.download(ticker, start=start, end=end)['Adj Close']
-    returns = stock.pct_change().dropna()
-    return returns
+# --- User Input for Returns ---
+st.subheader("Step 1: Input Your Data")
 
-returns = get_stock_data(ticker, start_date, end_date)
+num_periods = st.number_input("Number of periods (e.g., days or months):", min_value=2, value=10)
 
-st.subheader(f"{ticker} Daily Returns")
-st.line_chart(returns)
+st.write("Enter your stock returns, risk-free rate, and the five factors (as decimals, e.g., 0.01 for 1%)")
 
-# Load Fama-French 5 Factor data
-@st.cache_data
-def get_ff5_data():
-    ff5 = pd.read_csv(
-        "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip",
-        skiprows=3, skipfooter=3, engine='python'
-    )
-    ff5.index = pd.to_datetime(ff5['Date'], format='%Y%m%d')
-    ff5 = ff5[['Mkt-RF','SMB','HML','RMW','CMA','RF']].astype(float)/100
-    return ff5
+# Initialize empty lists
+stock_returns = []
+rf = []
+mkt_rf = []
+smb = []
+hml = []
+rmw = []
+cma = []
 
-ff5 = get_ff5_data()
-ff5 = ff5.loc[start_date:end_date]
+for i in range(int(num_periods)):
+    st.markdown(f"**Period {i+1}**")
+    stock_returns.append(st.number_input(f"Stock return {i+1}", key=f"r{i}"))
+    rf.append(st.number_input(f"Risk-free rate {i+1}", key=f"rf{i}"))
+    mkt_rf.append(st.number_input(f"Mkt-RF {i+1}", key=f"m{i}"))
+    smb.append(st.number_input(f"SMB {i+1}", key=f"smb{i}"))
+    hml.append(st.number_input(f"HML {i+1}", key=f"hml{i}"))
+    rmw.append(st.number_input(f"RMW {i+1}", key=f"rmw{i}"))
+    cma.append(st.number_input(f"CMA {i+1}", key=f"cma{i}"))
 
-# Merge stock returns with factor data
-data = pd.merge(returns, ff5, left_index=True, right_index=True)
-data['Excess'] = data[ticker] - data['RF']
+# --- Build DataFrame ---
+data = pd.DataFrame({
+    "Stock": stock_returns,
+    "RF": rf,
+    "Mkt-RF": mkt_rf,
+    "SMB": smb,
+    "HML": hml,
+    "RMW": rmw,
+    "CMA": cma
+})
 
-# Regression
-X = data[['Mkt-RF','SMB','HML','RMW','CMA']]
+data["Excess"] = data["Stock"] - data["RF"]
+
+# --- Run Regression ---
+X = data[["Mkt-RF","SMB","HML","RMW","CMA"]]
 X = sm.add_constant(X)
-y = data['Excess']
+y = data["Excess"]
 
 model = sm.OLS(y, X).fit()
 
 st.subheader("Five-Factor Regression Results")
 st.text(model.summary())
 
-# Plot factor sensitivities
+# --- Plot Factor Loadings ---
 st.subheader("Factor Loadings (Betas)")
 fig, ax = plt.subplots()
 sns.barplot(x=X.columns[1:], y=model.params[1:])
 ax.set_ylabel("Beta")
 st.pyplot(fig)
 
-# Optional: Show alpha
-st.subheader(f"Alpha: {model.params['const']:.4f} per day")
+st.subheader(f"Alpha (Intercept): {model.params['const']:.4f} per period")
